@@ -14,24 +14,28 @@ import (
 
 // ClientManager manages MCP clients for multiple users
 type ClientManager struct {
-	config        Config
-	log           pluginapi.LogService
-	clientsMu     sync.RWMutex
-	clients       map[string]*UserClients // userID to UserClients
-	activity      map[string]time.Time    // userID to last activity time
-	cleanupTicker *time.Ticker
-	closeChan     chan struct{}
-	clientTimeout time.Duration
-	oauthManager  *OAuthManager
+	config         Config
+	log            pluginapi.LogService
+	pluginAPI      *pluginapi.Client
+	clientsMu      sync.RWMutex
+	clients        map[string]*UserClients // userID to UserClients
+	activity       map[string]time.Time    // userID to last activity time
+	cleanupTicker  *time.Ticker
+	closeChan      chan struct{}
+	clientTimeout  time.Duration
+	oauthManager   *OAuthManager
+	embeddedClient *EmbeddedServerClient // Helper for embedded server (nil if disabled)
 }
 
 // NewClientManager creates a new MCP client manager
-func NewClientManager(config Config, log pluginapi.LogService, pluginAPI *pluginapi.Client, oauthManager *OAuthManager) *ClientManager {
+// embeddedServer can be nil if embedded server is not available
+func NewClientManager(config Config, log pluginapi.LogService, pluginAPI *pluginapi.Client, oauthManager *OAuthManager, embeddedServer EmbeddedMCPServer) *ClientManager {
 	manager := &ClientManager{
 		log:          log,
+		pluginAPI:    pluginAPI,
 		oauthManager: oauthManager,
 	}
-	manager.ReInit(config)
+	manager.ReInit(config, embeddedServer)
 	return manager
 }
 
@@ -57,12 +61,19 @@ func (m *ClientManager) cleanupInactiveClients() {
 	}
 }
 
-// ReInit re-initializes the client manager with a new configuration
-func (m *ClientManager) ReInit(config Config) {
+// ReInit re-initializes the client manager with a new configuration and embedded server
+func (m *ClientManager) ReInit(config Config, embeddedServer EmbeddedMCPServer) {
 	m.Close()
 
 	if config.IdleTimeoutMinutes <= 0 {
 		config.IdleTimeoutMinutes = 30
+	}
+
+	// Update embedded server client
+	if embeddedServer != nil {
+		m.embeddedClient = NewEmbeddedServerClient(embeddedServer, m.log, m.pluginAPI)
+	} else {
+		m.embeddedClient = nil
 	}
 
 	m.config = config
@@ -114,8 +125,8 @@ func (m *ClientManager) createAndStoreUserClient(userID string) (*UserClients, *
 
 	userClients := NewUserClients(userID, m.log, m.oauthManager)
 
-	// Let user client connect to all servers
-	mcpErrors := userClients.ConnectToAllServers(m.config.Servers)
+	// Let user client connect to remote servers only
+	mcpErrors := userClients.ConnectToRemoteServers(m.config.Servers)
 
 	// Store the client even if some servers failed to connect
 	// This allows partial success - user gets tools from working servers
@@ -137,12 +148,19 @@ func (m *ClientManager) getClientForUser(userID string) (*UserClients, *Errors) 
 	return m.createAndStoreUserClient(userID)
 }
 
-// GetToolsForUser returns the tools available for a specific user
-func (m *ClientManager) GetToolsForUser(userID string) ([]llm.Tool, *Errors) {
-	// Get or create client for this user
+// GetToolsForUser returns the tools available for a specific user, connecting to embedded server if session ID provided
+func (m *ClientManager) GetToolsForUser(userID, sessionID string) ([]llm.Tool, *Errors) {
+	// Get or create client for this user (connects to remote servers only)
 	userClient, mcpErrors := m.getClientForUser(userID)
 
-	// Return tools from successfully connected servers even if some failed
+	// Try to connect to embedded server if session ID provided
+	if sessionID != "" {
+		if embeddedErr := userClient.ConnectToEmbeddedServerIfAvailable(sessionID, m.embeddedClient, m.config.EmbeddedServer); embeddedErr != nil {
+			m.log.Debug("Failed to connect to embedded server for user", "userID", userID, "error", embeddedErr)
+		}
+	}
+
+	// Return tools from all connected servers (remote + embedded if connected)
 	return userClient.GetTools(), mcpErrors
 }
 
@@ -164,4 +182,13 @@ func (m *ClientManager) ProcessOAuthCallback(ctx context.Context, userID, state,
 // GetOAuthManager returns the OAuth manager instance
 func (m *ClientManager) GetOAuthManager() *OAuthManager {
 	return m.oauthManager
+}
+
+// GetEmbeddedServer returns the embedded MCP server instance (may be nil)
+// This method is kept for API compatibility
+func (m *ClientManager) GetEmbeddedServer() EmbeddedMCPServer {
+	if m.embeddedClient == nil {
+		return nil
+	}
+	return m.embeddedClient.server
 }
