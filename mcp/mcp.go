@@ -38,6 +38,7 @@ type EmbeddedServerConfig struct {
 // Config contains the configuration for the MCP  servers
 type Config struct {
 	Enabled            bool                 `json:"enabled"`
+	EnablePluginServer bool                 `json:"enablePluginServer"`
 	Servers            []ServerConfig       `json:"servers"`
 	EmbeddedServer     EmbeddedServerConfig `json:"embeddedServer"`
 	IdleTimeoutMinutes int                  `json:"idleTimeoutMinutes"`
