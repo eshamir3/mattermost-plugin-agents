@@ -599,8 +599,10 @@ func (s *OpenAI) streamResponsesAPIToChannels(params openai.ChatCompletionNewPar
 				// If we haven't sent the complete reasoning yet, send it now
 				if !reasoningComplete && reasoningSummaryBuffer.Len() > 0 {
 					output <- llm.TextStreamEvent{
-						Type:  llm.EventTypeReasoningEnd,
-						Value: reasoningSummaryBuffer.String(),
+						Type: llm.EventTypeReasoningEnd,
+						Value: llm.ReasoningData{
+							Text: reasoningSummaryBuffer.String(),
+						},
 					}
 					reasoningComplete = true
 				}
@@ -698,8 +700,10 @@ func (s *OpenAI) streamResponsesAPIToChannels(params openai.ChatCompletionNewPar
 				// If we haven't sent the complete reasoning yet and this is a tool call, send reasoning first
 				if !reasoningComplete && reasoningSummaryBuffer.Len() > 0 {
 					output <- llm.TextStreamEvent{
-						Type:  llm.EventTypeReasoningEnd,
-						Value: reasoningSummaryBuffer.String(),
+						Type: llm.EventTypeReasoningEnd,
+						Value: llm.ReasoningData{
+							Text: reasoningSummaryBuffer.String(),
+						},
 					}
 					reasoningComplete = true
 				}
@@ -763,8 +767,10 @@ func (s *OpenAI) streamResponsesAPIToChannels(params openai.ChatCompletionNewPar
 			// If we still have unsent reasoning (edge case: no output text), send it now
 			if !reasoningComplete && reasoningSummaryBuffer.Len() > 0 {
 				output <- llm.TextStreamEvent{
-					Type:  llm.EventTypeReasoningEnd,
-					Value: reasoningSummaryBuffer.String(),
+					Type: llm.EventTypeReasoningEnd,
+					Value: llm.ReasoningData{
+						Text: reasoningSummaryBuffer.String(),
+					},
 				}
 			}
 
