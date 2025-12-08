@@ -50,7 +50,7 @@ func createProvider(providerName string, modelOverride string) (llm.LanguageMode
 		if model == "" {
 			model = os.Getenv("OPENAI_MODEL")
 			if model == "" {
-				model = "gpt-4o"
+				model = "gpt-5"
 			}
 		}
 
@@ -74,7 +74,7 @@ func createProvider(providerName string, modelOverride string) (llm.LanguageMode
 		if model == "" {
 			model = os.Getenv("ANTHROPIC_MODEL")
 			if model == "" {
-				model = "claude-sonnet-4-20250514"
+				model = "claude-sonnet-4-5-20250929"
 			}
 		}
 
@@ -104,7 +104,7 @@ func createProvider(providerName string, modelOverride string) (llm.LanguageMode
 		if model == "" {
 			model = os.Getenv("AZURE_OPENAI_MODEL")
 			if model == "" {
-				model = "gpt-4o"
+				model = "gpt-5"
 			}
 		}
 
