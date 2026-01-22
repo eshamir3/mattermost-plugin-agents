@@ -53,6 +53,13 @@ type AddUserToChannelArgs struct {
 	ChannelID string `json:"channel_id" jsonschema:"ID of the channel to add user to"`
 }
 
+// GetUserChannelsArgs represents arguments for the get_user_channels tool
+type GetUserChannelsArgs struct {
+	TeamID  string `json:"team_id,omitempty" jsonschema:"Optional team ID to filter channels by team,maxLength=26"`
+	Page    int    `json:"page,omitempty" jsonschema:"Page number for pagination (default: 0),minimum=0"`
+	PerPage int    `json:"per_page,omitempty" jsonschema:"Number of channels per page (default: 60, max: 200),minimum=1,maximum=200"`
+}
+
 // getChannelTools returns all channel-related tools
 func (p *MattermostToolProvider) getChannelTools() []MCPTool {
 	return []MCPTool{
@@ -85,6 +92,12 @@ func (p *MattermostToolProvider) getChannelTools() []MCPTool {
 			Description: "Add a user to a channel. Parameters: user_id (required), channel_id (required). Returns confirmation message.",
 			Schema:      llm.NewJSONSchemaFromStruct[AddUserToChannelArgs](),
 			Resolver:    p.toolAddUserToChannel,
+		},
+		{
+			Name:        "get_user_channels",
+			Description: "Get all channels the current user is a member of. Parameters: team_id (optional - filter by team), page (default 0), per_page (default 60, max 200). Returns list of channels with metadata including ID, name, display_name, type, team_id, and purpose. Example: {\"team_id\": \"w1jkn9ebkiby7qezqfxk7o5ney\", \"per_page\": 100}",
+			Schema:      llm.NewJSONSchemaFromStruct[GetUserChannelsArgs](),
+			Resolver:    p.toolGetUserChannels,
 		},
 	}
 }
@@ -674,4 +687,91 @@ func (p *MattermostToolProvider) tryFindChannelByName(ctx context.Context, clien
 
 	// Return empty slice if no matches found (not a technical failure)
 	return matches, nil
+}
+
+// toolGetUserChannels implements the get_user_channels tool
+func (p *MattermostToolProvider) toolGetUserChannels(mcpContext *MCPToolContext, argsGetter llm.ToolArgumentGetter) (string, error) {
+	var args GetUserChannelsArgs
+	err := argsGetter(&args)
+	if err != nil {
+		return "invalid parameters to function", fmt.Errorf("failed to get arguments for tool get_user_channels: %w", err)
+	}
+
+	// Set defaults
+	if args.PerPage == 0 {
+		args.PerPage = 60
+	}
+	if args.PerPage > 200 {
+		args.PerPage = 200
+	}
+
+	// Get client from context
+	if mcpContext.Client == nil {
+		return "client not available", fmt.Errorf("client not available in context")
+	}
+	client := mcpContext.Client
+	ctx := context.Background()
+
+	// Get current user
+	user, _, err := client.GetMe(ctx, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to get current user: %w", err)
+	}
+
+	// Get channels for the user
+	var channels []*model.Channel
+	if args.TeamID != "" {
+		// Get channels for specific team
+		channels, _, err = client.GetChannelsForTeamForUser(ctx, args.TeamID, user.Id, false, "")
+		if err != nil {
+			return "", fmt.Errorf("failed to get channels for team: %w", err)
+		}
+	} else {
+		// Get all teams for user, then get channels for each team
+		teams, _, err := client.GetTeamsForUser(ctx, user.Id, "")
+		if err != nil {
+			return "", fmt.Errorf("failed to get teams: %w", err)
+		}
+
+		// Collect channels from all teams
+		for _, team := range teams {
+			teamChannels, _, err := client.GetChannelsForTeamForUser(ctx, team.Id, user.Id, false, "")
+			if err != nil {
+				p.logger.Warn("failed to get channels for team", "team_id", team.Id, "error", err)
+				continue
+			}
+			channels = append(channels, teamChannels...)
+		}
+	}
+
+	// Apply pagination
+	start := args.Page * args.PerPage
+	end := start + args.PerPage
+	if start >= len(channels) {
+		return "[]", nil // No channels in this page
+	}
+	if end > len(channels) {
+		end = len(channels)
+	}
+	channels = channels[start:end]
+
+	// Format response
+	var result strings.Builder
+	result.WriteString(fmt.Sprintf("Found %d channels:\n\n", len(channels)))
+	
+	for _, channel := range channels {
+		result.WriteString(fmt.Sprintf("Channel: %s\n", channel.DisplayName))
+		result.WriteString(fmt.Sprintf("  ID: %s\n", channel.Id))
+		result.WriteString(fmt.Sprintf("  Name: %s\n", channel.Name))
+		result.WriteString(fmt.Sprintf("  Type: %s\n", channel.Type))
+		if channel.TeamId != "" {
+			result.WriteString(fmt.Sprintf("  Team ID: %s\n", channel.TeamId))
+		}
+		if channel.Purpose != "" {
+			result.WriteString(fmt.Sprintf("  Purpose: %s\n", channel.Purpose))
+		}
+		result.WriteString("\n")
+	}
+
+	return result.String(), nil
 }
