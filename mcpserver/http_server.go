@@ -104,11 +104,12 @@ func NewHTTPServer(config HTTPConfig, logger loggerlib.Logger) (*MattermostHTTPM
 	secureHandler := mattermostServer.securityMiddleware(recoveryHandler)
 
 	// Create HTTP server with security middleware
+	// Use longer timeouts to handle large responses (e.g., reading channels with many posts)
 	mattermostServer.httpServer = &http.Server{
 		Addr:         addr,
 		Handler:      secureHandler,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		ReadTimeout:  5 * time.Minute,  // Allow up to 5 minutes for reading requests
+		WriteTimeout: 5 * time.Minute,  // Allow up to 5 minutes for writing responses
 	}
 
 	return mattermostServer, nil

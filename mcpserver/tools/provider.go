@@ -21,6 +21,7 @@ import (
 
 // MCPToolContext provides MCP-specific functionality with the authenticated client
 type MCPToolContext struct {
+	Ctx        context.Context // Request context for proper cancellation and timeout handling
 	Client     *model.Client4
 	AccessMode AccessMode
 	BotUserID  string // User ID for AI-generated content tracking: Bot ID (embedded) or authenticated user ID (external servers)
@@ -186,6 +187,7 @@ func (p *MattermostToolProvider) createMCPToolContext(ctx context.Context, metad
 	}
 
 	mcpContext := &MCPToolContext{
+		Ctx:        ctx, // Pass the request context for proper cancellation and timeout handling
 		Client:     client,
 		AccessMode: p.accessMode,
 	}

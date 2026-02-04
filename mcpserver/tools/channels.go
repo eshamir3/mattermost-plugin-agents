@@ -124,12 +124,12 @@ func (p *MattermostToolProvider) toolReadChannel(mcpContext *MCPToolContext, arg
 		args.Limit = 100
 	}
 
-	// Get client from context
+	// Get client and context
 	if mcpContext.Client == nil {
 		return "client not available", fmt.Errorf("client not available in context")
 	}
 	client := mcpContext.Client
-	ctx := context.Background()
+	ctx := mcpContext.Ctx // Use request context for proper cancellation and timeout handling
 
 	// Parse since timestamp if provided
 	var since int64
@@ -147,10 +147,19 @@ func (p *MattermostToolProvider) toolReadChannel(mcpContext *MCPToolContext, arg
 		return "failed to fetch channel info", fmt.Errorf("error fetching channel: %w", err)
 	}
 
-	// Get team info for context
-	team, _, err := client.GetTeam(ctx, channel.TeamId, "")
-	if err != nil {
-		return "failed to fetch team info", fmt.Errorf("error fetching team: %w", err)
+	// Get team info for context (only for team channels, not DMs/GMs)
+	var teamName string
+	if channel.TeamId != "" {
+		team, _, err := client.GetTeam(ctx, channel.TeamId, "")
+		if err != nil {
+			p.logger.Warn("failed to fetch team info", "team_id", channel.TeamId, "error", err)
+			teamName = "Unknown Team"
+		} else {
+			teamName = team.DisplayName
+		}
+	} else {
+		// DM or GM channel
+		teamName = "Direct Message"
 	}
 
 	// Get posts from the channel
@@ -171,21 +180,33 @@ func (p *MattermostToolProvider) toolReadChannel(mcpContext *MCPToolContext, arg
 		return "no posts found in the specified timeframe", nil
 	}
 
+	// Build a cache of user IDs to usernames to avoid duplicate API calls
+	userCache := make(map[string]string)
+	for _, post := range filteredPosts {
+		// Check if context is cancelled before each API call
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("request cancelled while fetching user information: %w", ctx.Err())
+		}
+
+		if _, exists := userCache[post.UserId]; !exists {
+			user, _, err := client.GetUser(ctx, post.UserId, "")
+			if err != nil {
+				p.logger.Warn("failed to get user for post", "user_id", post.UserId, "error", err)
+				userCache[post.UserId] = "Unknown User"
+			} else {
+				userCache[post.UserId] = user.Username
+			}
+		}
+	}
+
 	// Format the response
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("Channel: %s (Team: %s)\n", channel.DisplayName, team.DisplayName))
+	result.WriteString(fmt.Sprintf("Channel: %s (Team: %s)\n", channel.DisplayName, teamName))
 	result.WriteString(fmt.Sprintf("Found %d posts:\n\n", len(filteredPosts)))
 
 	for i, post := range filteredPosts {
-		// Get user info for the post
-		user, _, err := client.GetUser(ctx, post.UserId, "")
-		if err != nil {
-			p.logger.Warn("failed to get user for post", "user_id", post.UserId, "error", err)
-			result.WriteString(fmt.Sprintf("**Post %d** by Unknown User:\n", i+1))
-		} else {
-			result.WriteString(fmt.Sprintf("**Post %d** by %s:\n", i+1, user.Username))
-		}
-
+		username := userCache[post.UserId]
+		result.WriteString(fmt.Sprintf("**Post %d** by %s:\n", i+1, username))
 		result.WriteString(fmt.Sprintf("Post ID: %s\n", post.Id))
 		result.WriteString(fmt.Sprintf("%s\n\n", post.Message))
 	}
@@ -220,12 +241,12 @@ func (p *MattermostToolProvider) toolCreateChannel(mcpContext *MCPToolContext, a
 		return "type must be 'O' for public or 'P' for private", fmt.Errorf("invalid channel type: %s", args.Type)
 	}
 
-	// Get client from context
+	// Get client and context
 	if mcpContext.Client == nil {
 		return "client not available", fmt.Errorf("client not available in context")
 	}
 	client := mcpContext.Client
-	ctx := context.Background()
+	ctx := mcpContext.Ctx // Use request context for proper cancellation and timeout handling
 
 	// Create the channel
 	channel := &model.Channel{
@@ -253,12 +274,12 @@ func (p *MattermostToolProvider) toolGetChannelInfo(mcpContext *MCPToolContext, 
 		return "invalid parameters to function", fmt.Errorf("failed to get arguments for tool get_channel_info: %w", err)
 	}
 
-	// Get client from context
+	// Get client and context
 	if mcpContext.Client == nil {
 		return "client not available", fmt.Errorf("client not available in context")
 	}
 	client := mcpContext.Client
-	ctx := context.Background()
+	ctx := mcpContext.Ctx // Use request context for proper cancellation and timeout handling
 
 	// Validate team ID if provided
 	if args.TeamID != "" && !model.IsValidId(args.TeamID) {
@@ -481,12 +502,12 @@ func (p *MattermostToolProvider) toolGetChannelMembers(mcpContext *MCPToolContex
 		args.Page = 0
 	}
 
-	// Get client from context
+	// Get client and context
 	if mcpContext.Client == nil {
 		return "client not available", fmt.Errorf("client not available in context")
 	}
 	client := mcpContext.Client
-	ctx := context.Background()
+	ctx := mcpContext.Ctx // Use request context for proper cancellation and timeout handling
 
 	// Get channel members
 	members, _, err := client.GetChannelMembers(ctx, args.ChannelID, args.Page, args.Limit, "")
@@ -550,12 +571,12 @@ func (p *MattermostToolProvider) toolAddUserToChannel(mcpContext *MCPToolContext
 		return "invalid channel_id format", fmt.Errorf("channel_id must be a valid ID")
 	}
 
-	// Get client from context
+	// Get client and context
 	if mcpContext.Client == nil {
 		return "client not available", fmt.Errorf("client not available in context")
 	}
 	client := mcpContext.Client
-	ctx := context.Background()
+	ctx := mcpContext.Ctx // Use request context for proper cancellation and timeout handling
 
 	// Add user to channel
 	_, _, err = client.AddChannelMember(ctx, args.ChannelID, args.UserID)
@@ -706,12 +727,12 @@ func (p *MattermostToolProvider) toolGetUserChannels(mcpContext *MCPToolContext,
 		args.PerPage = 2000
 	}
 
-	// Get client from context
+	// Get client and context
 	if mcpContext.Client == nil {
 		return "client not available", fmt.Errorf("client not available in context")
 	}
 	client := mcpContext.Client
-	ctx := context.Background()
+	ctx := mcpContext.Ctx // Use request context for proper cancellation and timeout handling
 
 	// Get current user
 	user, _, err := client.GetMe(ctx, "")
@@ -783,9 +804,13 @@ func (p *MattermostToolProvider) toolGetUserChannels(mcpContext *MCPToolContext,
 	channels = channels[start:end]
 
 	// Build a map of team IDs to team info for display
-
 	teamInfoMap := make(map[string]*TeamInfo)
 	for _, channel := range channels {
+		// Check if context is cancelled before each API call
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("request cancelled while fetching team information: %w", ctx.Err())
+		}
+
 		if channel.TeamId != "" && teamInfoMap[channel.TeamId] == nil {
 			team, _, err := client.GetTeam(ctx, channel.TeamId, "")
 			if err != nil {
