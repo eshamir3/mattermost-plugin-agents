@@ -147,19 +147,35 @@ func (p *MattermostToolProvider) toolReadChannel(mcpContext *MCPToolContext, arg
 		return "failed to fetch channel info", fmt.Errorf("error fetching channel: %w", err)
 	}
 
-	// Get team info for context (only for team channels, not DMs/GMs)
-	var teamName string
-	if channel.TeamId != "" {
-		team, _, err := client.GetTeam(ctx, channel.TeamId, "")
-		if err != nil {
-			p.logger.Warn("failed to fetch team info", "team_id", channel.TeamId, "error", err)
-			teamName = "Unknown Team"
-		} else {
-			teamName = team.DisplayName
+	// Determine team display name; DMs/Groups have no team
+	channelDisplayName := channel.DisplayName
+	if channelDisplayName == "" {
+		switch channel.Type {
+		case model.ChannelTypeDirect:
+			channelDisplayName = "Direct Message"
+		case model.ChannelTypeGroup:
+			channelDisplayName = "Group Message"
+		default:
+			channelDisplayName = channel.Name
+		}
+	}
+
+	teamDisplayName := ""
+	if channel.TeamId == "" {
+		switch channel.Type {
+		case model.ChannelTypeDirect:
+			teamDisplayName = "Direct Message"
+		case model.ChannelTypeGroup:
+			teamDisplayName = "Group Message"
+		default:
+			teamDisplayName = "No Team"
 		}
 	} else {
-		// DM or GM channel
-		teamName = "Direct Message"
+		team, _, teamErr := client.GetTeam(ctx, channel.TeamId, "")
+		if teamErr != nil {
+			return "failed to fetch team info", fmt.Errorf("error fetching team: %w", teamErr)
+		}
+		teamDisplayName = team.DisplayName
 	}
 
 	// Get posts from the channel
@@ -201,7 +217,7 @@ func (p *MattermostToolProvider) toolReadChannel(mcpContext *MCPToolContext, arg
 
 	// Format the response
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("Channel: %s (Team: %s)\n", channel.DisplayName, teamName))
+	result.WriteString(fmt.Sprintf("Channel: %s (Team: %s)\n", channelDisplayName, teamDisplayName))
 	result.WriteString(fmt.Sprintf("Found %d posts:\n\n", len(filteredPosts)))
 
 	for i, post := range filteredPosts {
