@@ -118,6 +118,9 @@ func (p *MattermostToolProvider) registerDynamicTool(server *mcp.Server, mcpTool
 	}
 
 	handler := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Log tool invocation
+		p.logger.Info("MCP tool called", "tool", mcpTool.Name)
+
 		// Create MCP context from the authenticated client, passing along any metadata
 		mcpContext, err := p.createMCPToolContext(ctx, req.Params.Meta)
 		if err != nil {
@@ -149,6 +152,7 @@ func (p *MattermostToolProvider) registerDynamicTool(server *mcp.Server, mcpTool
 		// Call the tool resolver
 		result, err := mcpTool.Resolver(mcpContext, argsGetter)
 		if err != nil {
+			p.logger.Info("MCP tool failed", "tool", mcpTool.Name, "error", err.Error())
 			p.logger.Debug("Tool resolver failed", "tool", mcpTool.Name, "error", err)
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
@@ -157,6 +161,9 @@ func (p *MattermostToolProvider) registerDynamicTool(server *mcp.Server, mcpTool
 				IsError: true,
 			}, nil
 		}
+
+		// Log successful completion
+		p.logger.Info("MCP tool completed successfully", "tool", mcpTool.Name)
 
 		// Return successful result
 		return &mcp.CallToolResult{

@@ -5,6 +5,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -57,7 +58,7 @@ type AddUserToChannelArgs struct {
 type GetUserChannelsArgs struct {
 	TeamID  string `json:"team_id,omitempty" jsonschema:"Optional team ID to filter channels by team,maxLength=26"`
 	Page    int    `json:"page,omitempty" jsonschema:"Page number for pagination (default: 0),minimum=0"`
-	PerPage int    `json:"per_page,omitempty" jsonschema:"Number of channels per page (default: 60, max: 200),minimum=1,maximum=200"`
+	PerPage int    `json:"per_page,omitempty" jsonschema:"Number of channels per page (default: 2000, max: 2000),minimum=1,maximum=2000"`
 }
 
 // getChannelTools returns all channel-related tools
@@ -95,7 +96,7 @@ func (p *MattermostToolProvider) getChannelTools() []MCPTool {
 		},
 		{
 			Name:        "get_user_channels",
-			Description: "Get all channels the current user is a member of. Parameters: team_id (optional - filter by team), page (default 0), per_page (default 60, max 200). Returns list of channels with metadata including ID, name, display_name, type, team_id, and purpose. Example: {\"team_id\": \"w1jkn9ebkiby7qezqfxk7o5ney\", \"per_page\": 100}",
+			Description: "Get all channels the current user is a member of, including team channels, direct messages (DMs), and group messages (GMs). Parameters: team_id (optional - filter by team), page (default 0), per_page (default 2000, max 2000). Returns JSON object with 'channels' array, 'total_count', 'page', 'per_page', and 'has_more' fields. Each channel includes id, name, display_name, type, team info (for team channels), purpose, and header. Example: {\"per_page\": 2000}",
 			Schema:      llm.NewJSONSchemaFromStruct[GetUserChannelsArgs](),
 			Resolver:    p.toolGetUserChannels,
 		},
@@ -697,12 +698,12 @@ func (p *MattermostToolProvider) toolGetUserChannels(mcpContext *MCPToolContext,
 		return "invalid parameters to function", fmt.Errorf("failed to get arguments for tool get_user_channels: %w", err)
 	}
 
-	// Set defaults
+	// Set defaults - use 2000 (max) by default to get all channels in most cases
 	if args.PerPage == 0 {
-		args.PerPage = 60
+		args.PerPage = 2000
 	}
-	if args.PerPage > 200 {
-		args.PerPage = 200
+	if args.PerPage > 2000 {
+		args.PerPage = 2000
 	}
 
 	// Get client from context
@@ -718,60 +719,123 @@ func (p *MattermostToolProvider) toolGetUserChannels(mcpContext *MCPToolContext,
 		return "", fmt.Errorf("failed to get current user: %w", err)
 	}
 
-	// Get channels for the user
+	// Get ALL channels for the user (including DMs, GMs, and team channels)
+	// Pass 0 for lastDeleteAt to get all channels without filtering
+	allChannels, _, err := client.GetChannelsForUserWithLastDeleteAt(ctx, user.Id, 0)
+	if err != nil {
+		return "", fmt.Errorf("failed to get channels for user: %w", err)
+	}
+
+	// Filter by team if specified
 	var channels []*model.Channel
 	if args.TeamID != "" {
-		// Get channels for specific team
-		channels, _, err = client.GetChannelsForTeamForUser(ctx, args.TeamID, user.Id, false, "")
-		if err != nil {
-			return "", fmt.Errorf("failed to get channels for team: %w", err)
+		for _, channel := range allChannels {
+			if channel.TeamId == args.TeamID {
+				channels = append(channels, channel)
+			}
 		}
 	} else {
-		// Get all teams for user, then get channels for each team
-		teams, _, err := client.GetTeamsForUser(ctx, user.Id, "")
-		if err != nil {
-			return "", fmt.Errorf("failed to get teams: %w", err)
-		}
-
-		// Collect channels from all teams
-		for _, team := range teams {
-			teamChannels, _, err := client.GetChannelsForTeamForUser(ctx, team.Id, user.Id, false, "")
-			if err != nil {
-				p.logger.Warn("failed to get channels for team", "team_id", team.Id, "error", err)
-				continue
-			}
-			channels = append(channels, teamChannels...)
-		}
+		channels = allChannels
 	}
+
+	// Define response types
+	type TeamInfo struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+	}
+
+	type ChannelInfo struct {
+		ID          string    `json:"id"`
+		Name        string    `json:"name"`
+		DisplayName string    `json:"display_name"`
+		Type        string    `json:"type"`
+		Team        *TeamInfo `json:"team,omitempty"`
+		Purpose     string    `json:"purpose,omitempty"`
+		Header      string    `json:"header,omitempty"`
+	}
+
+	// Store total count before pagination
+	totalCount := len(channels)
 
 	// Apply pagination
 	start := args.Page * args.PerPage
 	end := start + args.PerPage
 	if start >= len(channels) {
-		return "[]", nil // No channels in this page
+		// Return empty result with pagination info
+		emptyResult := map[string]interface{}{
+			"channels":    []ChannelInfo{},
+			"total_count": totalCount,
+			"page":        args.Page,
+			"per_page":    args.PerPage,
+			"has_more":    false,
+		}
+		jsonBytes, err := json.MarshalIndent(emptyResult, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal empty result to JSON: %w", err)
+		}
+		return string(jsonBytes), nil
 	}
 	if end > len(channels) {
 		end = len(channels)
 	}
+	hasMore := end < totalCount
 	channels = channels[start:end]
 
-	// Format response
-	var result strings.Builder
-	result.WriteString(fmt.Sprintf("Found %d channels:\n\n", len(channels)))
-	
+	// Build a map of team IDs to team info for display
+
+	teamInfoMap := make(map[string]*TeamInfo)
 	for _, channel := range channels {
-		result.WriteString(fmt.Sprintf("Channel: %s\n", channel.DisplayName))
-		result.WriteString(fmt.Sprintf("  ID: %s\n", channel.Id))
-		result.WriteString(fmt.Sprintf("  Name: %s\n", channel.Name))
-		result.WriteString(fmt.Sprintf("  Type: %s\n", channel.Type))
-		if channel.TeamId != "" {
-			result.WriteString(fmt.Sprintf("  Team ID: %s\n", channel.TeamId))
+		if channel.TeamId != "" && teamInfoMap[channel.TeamId] == nil {
+			team, _, err := client.GetTeam(ctx, channel.TeamId, "")
+			if err != nil {
+				p.logger.Warn("failed to get team info", "team_id", channel.TeamId, "error", err)
+				// Fall back to just the ID
+				teamInfoMap[channel.TeamId] = &TeamInfo{
+					ID:          channel.TeamId,
+					Name:        "",
+					DisplayName: "",
+				}
+			} else {
+				teamInfoMap[channel.TeamId] = &TeamInfo{
+					ID:          team.Id,
+					Name:        team.Name,
+					DisplayName: team.DisplayName,
+				}
+			}
 		}
-		if channel.Purpose != "" {
-			result.WriteString(fmt.Sprintf("  Purpose: %s\n", channel.Purpose))
-		}
-		result.WriteString("\n")
 	}
 
-	return result.String(), nil
+	// Build JSON response
+	channelInfos := make([]ChannelInfo, 0, len(channels))
+	for _, channel := range channels {
+		info := ChannelInfo{
+			ID:          channel.Id,
+			Name:        channel.Name,
+			DisplayName: channel.DisplayName,
+			Type:        string(channel.Type),
+			Purpose:     channel.Purpose,
+			Header:      channel.Header,
+		}
+		if channel.TeamId != "" {
+			info.Team = teamInfoMap[channel.TeamId]
+		}
+		channelInfos = append(channelInfos, info)
+	}
+
+	// Build response with pagination metadata
+	response := map[string]interface{}{
+		"channels":    channelInfos,
+		"total_count": totalCount,
+		"page":        args.Page,
+		"per_page":    args.PerPage,
+		"has_more":    hasMore,
+	}
+
+	jsonBytes, err := json.MarshalIndent(response, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal channels to JSON: %w", err)
+	}
+
+	return string(jsonBytes), nil
 }
